@@ -35,12 +35,27 @@ age_of() {
   echo $((now - mtime))
 }
 
+# The curl argv for one rc call, one argument per line so callers can read it
+# into an array. A unix:// address and a host:port differ only in how curl
+# dials; everything downstream is the same HTTP.
+rc_argv() {
+  local addr="$1" path="$2" query="${3:-}" timeout="${4:-2}"
+  [[ -n $addr ]] || return 1
+  printf '%s\n' curl -sf -m "$timeout" -X POST
+  if [[ $addr == unix://* ]]; then
+    printf '%s\n' --unix-socket "${addr#unix://}" "http://localhost/$path${query:+?$query}"
+  else
+    printf '%s\n' "http://$addr/$path${query:+?$query}"
+  fi
+}
+
 # rclone's remote control. curl rather than `rclone rc`: same JSON, 13ms
 # instead of 84ms, and this runs for every mount on every bar tick.
 rc() {
-  local addr="$1" path="$2" query="${3:-}"
-  [[ -n $addr ]] || return 1
-  curl -sf -m 2 -X POST "http://$addr/$path${query:+?$query}" 2>/dev/null
+  local args=()
+  mapfile -t args < <(rc_argv "$@")
+  ((${#args[@]})) || return 1
+  "${args[@]}" 2>/dev/null
 }
 
 # Run a refresh in the background exactly once: the lock dir doubles as the
@@ -113,6 +128,10 @@ do_remount() {
   saved="$mounts_dir/$(key_for "$mp").cmd"
   [[ -f "$saved" ]] || { echo "no saved command for $mp" >&2; exit 1; }
   do_unmount "$mp" 2>/dev/null
+  # A mount killed outright leaves its rc socket file behind, and replaying the
+  # command would die on "bind: address already in use". The systemd unit has
+  # its own ExecStartPre for this; a hand-started mount has only us.
+  [[ ${meta_rc:-} == unix://* ]] && rm -f "${meta_rc#unix://}"
   mapfile -d '' -t argv < "$saved"
   [[ ${#argv[@]} -gt 0 ]] || exit 1
   setsid --fork "${argv[@]}" >/dev/null 2>&1 &
@@ -248,8 +267,8 @@ for mp in "${!seen[@]}"; do
       if [[ -n $vfs_stats ]]; then
         # Through rc the running mount answers from its own decrypted config,
         # so this works even when the widget has no RCLONE_CONFIG_PASS.
-        refresh_bg "$about_file" curl -sf -m 30 -X POST \
-          "http://$rc_addr/operations/about?fs=$remote"
+        mapfile -t about_argv < <(rc_argv "$rc_addr" operations/about "fs=$remote" 30)
+        refresh_bg "$about_file" "${about_argv[@]}"
       else
         refresh_bg "$about_file" timeout 30 rclone about "$remote" --json
       fi

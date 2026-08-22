@@ -7,6 +7,7 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 state="$here/state.sh"
 rc_port=5599
+rc_sock="${XDG_RUNTIME_DIR:-/tmp}/omarchy-rclone-check.sock"
 work="$(mktemp -d)"
 mnt="$work/mnt"
 mkdir -p "$work/src" "$mnt"
@@ -15,7 +16,8 @@ echo hello > "$work/src/a.txt"
 cleanup() {
   "$state" unmount "$mnt" >/dev/null 2>&1 || true
   rm -rf "$work"
-  rm -f "${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-rclone/mounts/${mnt//\//%}".{cmd,meta}
+  rm -f "${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-rclone/mounts/${mnt//\//%}".{cmd,meta,status}
+  rm -f "$rc_sock"
 }
 trap cleanup EXIT
 
@@ -36,15 +38,16 @@ start_mount() {  # extra flags for this round
   sleep 3
 }
 
-for round in plain rc; do
+# Both rc dial modes are covered: a unix socket is what the systemd unit uses,
+# a host:port is what a hand-rolled `rclone mount --rc` usually has.
+for round in plain rc-tcp rc-socket; do
   echo "== $round"
-  if [[ $round == rc ]]; then
-    start_mount --rc --rc-addr "127.0.0.1:$rc_port" --rc-no-auth
-    assert .hasRc true "rc answers"
-  else
-    start_mount
-    assert .hasRc false "no rc"
-  fi
+  case $round in
+    rc-tcp)    start_mount --rc --rc-addr "127.0.0.1:$rc_port" --rc-no-auth ;;
+    rc-socket) rm -f "$rc_sock"; start_mount --rc --rc-addr "unix://$rc_sock" --rc-no-auth ;;
+    *)         start_mount ;;
+  esac
+  [[ $round == plain ]] && assert .hasRc false "no rc" || assert .hasRc true "rc answers"
   assert .status ok "mounted"
 
   # A killed mount leaves the mountpoint in /proc/self/mounts: only touching it
@@ -57,7 +60,7 @@ for round in plain rc; do
   sleep 4
   assert .status ok "remounted"
 
-  if [[ $round == rc ]]; then
+  if [[ $round != plain ]]; then
     # --vfs-write-back 300s parks the write long enough to see it queued, and
     # flush has to drain it well before that timer would.
     head -c 4M /dev/urandom > "$mnt/queued.bin"

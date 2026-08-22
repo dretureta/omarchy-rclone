@@ -17,14 +17,23 @@ EnvironmentFile=%h/.config/rclone-mounts/%i.env
 # Restart= cannot recover the one case that matters most.
 ExecStartPre=-/usr/bin/fusermount3 -uz ${MOUNT_POINT}
 ExecStartPre=/usr/bin/mkdir -p ${MOUNT_POINT}
+# Same story for the rc socket: a killed process leaves the file behind and the
+# next start dies with "bind: address already in use", so Restart= would never
+# recover a hard crash.
+ExecStartPre=-/usr/bin/rm -f %t/rclone-%i.sock
 ExecStart=/usr/bin/rclone mount ${REMOTE} ${MOUNT_POINT} \
   --vfs-cache-mode full --vfs-cache-max-size 110G --vfs-write-back 1m \
   --buffer-size 128M --dir-cache-time 1000h --poll-interval 15s \
   --attr-timeout 1h --vfs-read-chunk-size 64M --vfs-read-chunk-size-limit 1G \
   --vfs-read-ahead 256M --transfers 16 --checkers 16 --drive-chunk-size 128M \
   --no-modtime --volname ${VOLNAME} --log-file ${LOG_FILE} --log-level INFO \
-  --rc --rc-addr 127.0.0.1:${RC_PORT} --rc-no-auth
+  --rc --rc-addr unix://%t/rclone-%i.sock --rc-no-auth
 ExecStopPost=-/usr/bin/fusermount3 -uz ${MOUNT_POINT}
+ExecStopPost=-/usr/bin/rm -f %t/rclone-%i.sock
+# %t is XDG_RUNTIME_DIR, which is 0700: the socket is reachable by this user
+# and nobody else. A loopback port is not uid-restricted, and rclone's docs are
+# blunt that rc access is equivalent to shell access as the user running it.
+UMask=0077
 Restart=on-failure
 RestartSec=5
 # On SIGTERM rclone unmounts and finishes uploading the write-back queue.

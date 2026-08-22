@@ -46,13 +46,24 @@ Live numbers — transfer rate, write-back queue, cache usage — come from
 rclone's remote control, so mounts should run with it:
 
 ```bash
-rclone mount GDrive: ~/GDrive ... --rc --rc-addr 127.0.0.1:5572 --rc-no-auth
+rclone mount GDrive: ~/GDrive ... --rc --rc-addr unix://$XDG_RUNTIME_DIR/rclone-gdrive.sock --rc-no-auth
 ```
 
-One port per mount; the widget finds the address in the process command line,
-so there is nothing to configure. Note that **`--rc` is incompatible with
-`--daemon`**: the daemonizing parent binds the port and the child dies with
-`address already in use`. Use `setsid --fork` instead.
+A unix socket rather than a loopback port: `$XDG_RUNTIME_DIR` is 0700, so the
+socket is reachable by its owner and nobody else, while a port on localhost is
+open to every local user. That matters here — rclone's own docs put rc access
+on a par with shell access as the user running it. A `host:port` address still
+works and the widget dials either; it finds the address in the process command
+line, so there is nothing to configure.
+
+Two things to know:
+
+- **`--rc` is incompatible with `--daemon`.** The daemonizing parent binds the
+  address and the child dies with `address already in use`, taking the mount
+  with it. Use `setsid --fork`, or the systemd unit above.
+- **A killed mount leaves its socket file behind**, and the next start fails to
+  bind. The unit clears it in `ExecStartPre`; the widget's remount does the same
+  before replaying a hand-started mount.
 
 Without `--rc` the widget still reports mount health and log errors, it just
 cannot see speed, queue, or per-mount cache usage.
