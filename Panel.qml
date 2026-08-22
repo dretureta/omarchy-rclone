@@ -24,9 +24,12 @@ Panel {
   readonly property int problems: Number(state.problems || 0)
   readonly property int errorCount: Number(state.errors || 0)
   readonly property color statusColor: problems > 0 ? urgent : foreground
+  readonly property real speed: Number(state.speed || 0)
+  readonly property int queued: Number(state.queued || 0)
   readonly property string barText: {
     if (mounts.length === 0) return "󰅤"
     if (problems > 0) return "󰅤 " + problems
+    if (speed > 0) return "󰅧 " + formatRate(speed)
     return "󰅟 " + mounts.length
   }
 
@@ -67,6 +70,10 @@ Panel {
     var i = 0
     while (n >= 1024 && i < units.length - 1) { n /= 1024; i++ }
     return (n >= 100 || i === 0 ? Math.round(n) : n.toFixed(1)) + units[i]
+  }
+
+  function formatRate(value) {
+    return formatBytes(value) + "/s"
   }
 
   function statusGlyph(status) {
@@ -161,7 +168,7 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(420))
+    contentWidth: panel.fittedContentWidth(Style.space(460))
     contentHeight: panel.fittedContentHeight(contentColumn.implicitHeight, Style.space(620))
 
     PanelKeyCatcher {
@@ -255,32 +262,25 @@ Panel {
 
           Item {
             width: parent.width
-            implicitHeight: Math.max(footerText.implicitHeight, refreshButton.implicitHeight)
+            implicitHeight: footerText.implicitHeight
 
             Text {
               id: footerText
               anchors.left: parent.left
-              anchors.right: refreshButton.left
-              anchors.rightMargin: Style.space(12)
+              anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
-              text: "VFS cache " + root.formatBytes(root.state.vfsBytes)
-                + (root.errorCount > 0 ? "  ·  " + root.errorCount + " errors today" : "")
+              text: {
+                var parts = ["VFS cache " + root.formatBytes(root.state.vfsBytes)]
+                if (root.queued > 0) parts.push(root.queued + " waiting to upload")
+                if (root.errorCount > 0) parts.push(root.errorCount + " errors today")
+                return parts.join("  ·  ")
+              }
               color: root.errorCount > 0 ? root.urgent : root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               elide: Text.ElideRight
             }
 
-            PanelActionButton {
-              id: refreshButton
-              anchors.right: parent.right
-              anchors.verticalCenter: parent.verticalCenter
-              iconText: "󰑐"
-              tooltipText: "Refresh"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              onClicked: root.refresh()
-            }
           }
         }
       }
@@ -337,13 +337,35 @@ Panel {
         Text {
           width: parent.width
           text: {
-            var parts = [root.statusLabel(mountRow.mount)]
+            var parts = mountRow.status === "ok" ? [] : [root.statusLabel(mountRow.mount)]
             var usage = root.usageText(mountRow.mount)
             if (usage) parts.push(usage)
+            if (mountRow.mount.cacheBytes !== null && mountRow.mount.cacheBytes !== undefined)
+              parts.push("cache " + root.formatBytes(mountRow.mount.cacheBytes))
+            if (Number(mountRow.mount.queued || 0) > 0) parts.push(mountRow.mount.queued + " queued")
             if (Number(mountRow.mount.errors || 0) > 0) parts.push(mountRow.mount.errors + " err")
             return parts.join("  ·  ")
           }
           color: mountRow.status === "ok" ? root.dim : root.urgent
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          elide: Text.ElideRight
+        }
+
+        Text {
+          visible: text !== ""
+          width: parent.width
+          text: {
+            var moving = mountRow.mount.transferring || []
+            if (moving.length === 0) return ""
+            var head = moving[0]
+            var line = "↑ " + String(head.name || "").split("/").pop()
+              + "  " + Math.round(Number(head.percentage || 0)) + "%"
+            if (Number(head.speed || 0) > 0) line += "  ·  " + root.formatRate(head.speed)
+            if (moving.length > 1) line += "  (+" + (moving.length - 1) + ")"
+            return line
+          }
+          color: root.foreground
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight
@@ -373,6 +395,24 @@ Panel {
           foreground: root.foreground
           fontFamily: root.fontFamily
           onClicked: root.openPath(String(mountRow.mount.path || ""))
+        }
+
+        PanelActionButton {
+          visible: mountRow.status === "ok" && mountRow.mount.hasRc === true
+          iconText: "󰑐"
+          tooltipText: "Refresh dir cache"
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          onClicked: root.runAction("refresh", String(mountRow.mount.path || ""))
+        }
+
+        PanelActionButton {
+          visible: Number(mountRow.mount.queued || 0) > 0
+          iconText: "󰅧"
+          tooltipText: "Upload queued files now"
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          onClicked: root.runAction("flush", String(mountRow.mount.path || ""))
         }
 
         PanelActionButton {

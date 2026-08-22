@@ -7,9 +7,27 @@ crossed-out cloud the moment one of them is down or stale — the failure mode
 that otherwise stays invisible, because a dead FUSE mount leaves the directory
 sitting there looking empty.
 
-The popup lists every mount with its status, remote usage, today's error count
-from its log file, and buttons to open it, unmount it, or bring a dead one
-back.
+The popup lists every mount with its status, remote usage, VFS cache size,
+pending uploads, today's error count, and buttons to open it, refresh its
+directory cache, upload what is queued, unmount it, or bring a dead one back.
+While data is moving, the bar shows the transfer rate instead of the count.
+
+## Mount with `--rc`
+
+Live numbers — transfer rate, write-back queue, cache usage — come from
+rclone's remote control, so mounts should run with it:
+
+```bash
+rclone mount GDrive: ~/GDrive ... --rc --rc-addr 127.0.0.1:5572 --rc-no-auth
+```
+
+One port per mount; the widget finds the address in the process command line,
+so there is nothing to configure. Note that **`--rc` is incompatible with
+`--daemon`**: the daemonizing parent binds the port and the child dies with
+`address already in use`. Use `setsid --fork` instead.
+
+Without `--rc` the widget still reports mount health and log errors, it just
+cannot see speed, queue, or per-mount cache usage.
 
 ## Install
 
@@ -47,12 +65,22 @@ shell than they do anywhere else.
 - **Remount** replays the exact argv saved from `/proc/<pid>/cmdline` while the
   mount was alive; once the process is gone that argv is unrecoverable, which
   is why it is cached under `~/.cache/omarchy-rclone/mounts/`.
-- **Errors** are today's `ERROR` lines from the mount's `--log-file`.
-- **`rclone about` and the VFS cache size** are slow (an API call and a `du`
-  over ~100 GB), so they are served from a cache and refreshed in a detached
-  background job. The bar tick never blocks on them.
+- **Errors** are today's `ERROR` lines from the mount's `--log-file`, minus
+  rclone's recurring "Failed to read config file - using previous config"
+  message, which is benign and would otherwise keep the widget red.
+- **Live data** comes from `vfs/stats`, `core/stats` and `vfs/queue` over rc,
+  fetched with `curl` rather than `rclone rc` — same JSON, 13 ms instead of
+  84 ms, and this runs for every mount on every tick.
+- **Remote usage** goes through rc's `operations/about`, which the running
+  mount answers from its own decrypted config. That matters with an encrypted
+  `rclone.conf`: the shell process has no `RCLONE_CONFIG_PASS`, so spawning
+  `rclone about` there would just hang on a password prompt.
+- **VFS cache size** is what each mount reports over rc. Without rc it falls
+  back to a `du`, cached and refreshed in a detached background job so the bar
+  tick never blocks on it.
 
 ## Not here yet
 
-Live transfer speed, VFS write-back queue, bandwidth limits, and cache
-controls all need the mounts running with `--rc`.
+Bandwidth limits (`core/bwlimit`), per-file cache eviction (`vfs/forget`), and
+mounting remotes straight from the panel, which needs the `rclone rcd` +
+`mount/mount` architecture rather than one rc port per mount process.
