@@ -1,0 +1,35 @@
+[Unit]
+Description=rclone mount %i
+Documentation=https://rclone.org/commands/rclone_mount/
+# The network can lag behind session start, so keep retrying for a while
+# before giving up.
+StartLimitBurst=10
+StartLimitIntervalSec=300
+
+[Service]
+# rclone signals readiness over sd-notify once the mount is usable, so
+# `systemctl start` returns when the directory can actually be read.
+Type=notify
+EnvironmentFile=%h/.config/secrets/rclone.env
+EnvironmentFile=%h/.config/rclone-mounts/%i.env
+# A mount killed outright leaves the FUSE endpoint hanging, and then even
+# mkdir fails with "Transport endpoint is not connected". Without this,
+# Restart= cannot recover the one case that matters most.
+ExecStartPre=-/usr/bin/fusermount3 -uz ${MOUNT_POINT}
+ExecStartPre=/usr/bin/mkdir -p ${MOUNT_POINT}
+ExecStart=/usr/bin/rclone mount ${REMOTE} ${MOUNT_POINT} \
+  --vfs-cache-mode full --vfs-cache-max-size 110G --vfs-write-back 1m \
+  --buffer-size 128M --dir-cache-time 1000h --poll-interval 15s \
+  --attr-timeout 1h --vfs-read-chunk-size 64M --vfs-read-chunk-size-limit 1G \
+  --vfs-read-ahead 256M --transfers 16 --checkers 16 --drive-chunk-size 128M \
+  --no-modtime --volname ${VOLNAME} --log-file ${LOG_FILE} --log-level INFO \
+  --rc --rc-addr 127.0.0.1:${RC_PORT} --rc-no-auth
+ExecStopPost=-/usr/bin/fusermount3 -uz ${MOUNT_POINT}
+Restart=on-failure
+RestartSec=5
+# On SIGTERM rclone unmounts and finishes uploading the write-back queue.
+# Give it room to do that before a shutdown pulls the network away.
+TimeoutStopSec=120
+
+[Install]
+WantedBy=default.target

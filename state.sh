@@ -2,8 +2,8 @@
 # Data source for the io.github.dretureta.rclone bar widget.
 #
 #   state.sh              print one JSON object describing every rclone mount
-#   state.sh unmount <mp> lazily unmount <mp>
-#   state.sh remount <mp> unmount <mp>, then re-run the command that created it
+#   state.sh unmount <mp> stop the mount (its systemd unit, if it has one)
+#   state.sh remount <mp> bring it back
 #   state.sh refresh <mp> re-read the dir cache (needs --rc)
 #   state.sh flush <mp>   upload everything queued right now (needs --rc)
 #
@@ -56,13 +56,33 @@ refresh_bg() {
   ' _ "$out" "$lock" "$@" >/dev/null 2>&1 &
 }
 
-read_meta() {  # remote, log, rc address
+# A red icon in the bar only helps if you happen to be looking at it, so the
+# ok <-> broken transition is worth a desktop notification. Storing the last
+# status per mount also means a crash that systemd restarts within one tick
+# never nags.
+notify_transition() {
+  local key="$1" name="$2" mp="$3" status="$4"
+  local file="$mounts_dir/$key.status" previous=""
+  [[ $status == mounting ]] && return 0
+  [[ -f $file ]] && previous=$(<"$file")
+  printf '%s' "$status" > "$file"
+  [[ -n $previous && $previous != "$status" ]] || return 0
+  command -v notify-send >/dev/null || return 0
+  if [[ $status == ok ]]; then
+    [[ $previous == ok ]] || notify-send -a Rclone "$name is back" "$mp"
+  elif [[ $previous == ok ]]; then
+    notify-send -a Rclone -u critical "$name is $status" "$mp"
+  fi
+}
+
+read_meta() {  # remote, log, rc address, systemd unit
   local key="$1"
-  meta_remote="" meta_log="" meta_rc=""
+  meta_remote="" meta_log="" meta_rc="" meta_unit=""
   [[ -f "$mounts_dir/$key.meta" ]] || return 1
-  # A file written before the rc address was recorded has only two lines, so
-  # the third read hits EOF: that is missing data, not a failure.
-  { read -r meta_remote; read -r meta_log; read -r meta_rc; } < "$mounts_dir/$key.meta" || true
+  # A file written by an older version has fewer lines, so the later reads hit
+  # EOF: that is missing data, not a failure.
+  { read -r meta_remote; read -r meta_log; read -r meta_rc; read -r meta_unit; } \
+    < "$mounts_dir/$key.meta" || true
   [[ -n $meta_remote ]]
 }
 
@@ -70,14 +90,26 @@ read_meta() {  # remote, log, rc address
 
 unmount_tool() { command -v fusermount3 || command -v fusermount; }
 
+# Unmounting a systemd-managed mount by hand is pointless: the unit would just
+# restart it. Whatever started the mount has to be what stops it.
 do_unmount() {
   local mp="$1" tool
+  read_meta "$(key_for "$mp")"
+  if [[ -n ${meta_unit:-} ]]; then
+    systemctl --user stop "$meta_unit"
+    return
+  fi
   tool=$(unmount_tool) || exit 1
   "$tool" -uz -- "$mp"
 }
 
 do_remount() {
   local mp="$1" saved argv
+  read_meta "$(key_for "$mp")"
+  if [[ -n ${meta_unit:-} ]]; then
+    systemctl --user restart "$meta_unit"
+    return
+  fi
   saved="$mounts_dir/$(key_for "$mp").cmd"
   [[ -f "$saved" ]] || { echo "no saved command for $mp" >&2; exit 1; }
   do_unmount "$mp" 2>/dev/null
@@ -123,7 +155,7 @@ done < /proc/self/mounts
 
 # Live `rclone mount` processes, with the exact argv saved so a dead mount can
 # be brought back later — once the process is gone, that argv is unrecoverable.
-declare -A pid_of=() remote_of=() log_of=() rc_of=()
+declare -A pid_of=() remote_of=() log_of=() rc_of=() unit_of=()
 for cmdline in /proc/[0-9]*/cmdline; do
   pid=${cmdline#/proc/}; pid=${pid%/cmdline}
   mapfile -d '' -t argv 2>/dev/null < "$cmdline" || continue
@@ -141,10 +173,15 @@ for cmdline in /proc/[0-9]*/cmdline; do
     esac
   done
 
-  pid_of["$mp"]=$pid remote_of["$mp"]=$remote log_of["$mp"]=$log rc_of["$mp"]=$rc_addr
+  # The cgroup line names the unit when systemd is the one running this mount.
+  unit=$(sed -n 's|.*/\([^/]*\.service\)$|\1|p' "/proc/$pid/cgroup" 2>/dev/null | head -1)
+  [[ $unit == rclone* ]] || unit=""
+
+  pid_of["$mp"]=$pid remote_of["$mp"]=$remote log_of["$mp"]=$log
+  rc_of["$mp"]=$rc_addr unit_of["$mp"]=$unit
   key=$(key_for "$mp")
   printf '%s\0' "${argv[@]}" > "$mounts_dir/$key.cmd"
-  printf '%s\n%s\n%s\n' "$remote" "$log" "$rc_addr" > "$mounts_dir/$key.meta"
+  printf '%s\n%s\n%s\n%s\n' "$remote" "$log" "$rc_addr" "$unit" > "$mounts_dir/$key.meta"
 done
 
 # Anything ever seen stays in the union, so a mount that died is reported as
@@ -166,9 +203,9 @@ rc_seen=0
 
 for mp in "${!seen[@]}"; do
   key=$(key_for "$mp")
-  remote=${remote_of[$mp]:-} log=${log_of[$mp]:-} rc_addr=${rc_of[$mp]:-}
+  remote=${remote_of[$mp]:-} log=${log_of[$mp]:-} rc_addr=${rc_of[$mp]:-} unit=${unit_of[$mp]:-}
   if [[ -z $remote ]] && read_meta "$key"; then
-    remote=$meta_remote log=$meta_log rc_addr=$meta_rc
+    remote=$meta_remote log=$meta_log rc_addr=$meta_rc unit=$meta_unit
   fi
 
   pid=${pid_of[$mp]:-0}
@@ -189,6 +226,8 @@ for mp in "${!seen[@]}"; do
   else
     status=down
   fi
+
+  notify_transition "$key" "${remote:-$mp}" "$mp" "$status"
 
   errors=0 last_error=""
   if [[ -n $log && -r $log ]]; then
@@ -229,14 +268,15 @@ for mp in "${!seen[@]}"; do
 
   rows+=("$(jq -cn \
     --arg mp "$mp" --arg remote "$remote" --arg status "$status" --arg log "$log" \
-    --arg rcAddr "$rc_addr" --arg lastError "$last_error" \
+    --arg rcAddr "$rc_addr" --arg unit "$unit" --arg lastError "$last_error" \
     --argjson pid "$pid" --argjson errors "$errors" --argjson about "$about" \
     --argjson vfs "${vfs_stats:-null}" --argjson core "${core_stats:-null}" \
     --argjson queue "${queue:-[]}" \
     --argjson canRemount "$([[ -f "$mounts_dir/$key.cmd" ]] && echo true || echo false)" \
     '{path: $mp, remote: $remote, status: $status, pid: $pid, log: $log,
-      errors: $errors, lastError: $lastError, canRemount: $canRemount,
-      rcAddr: $rcAddr, hasRc: ($vfs != null),
+      errors: $errors, lastError: $lastError,
+      canRemount: ($canRemount or ($unit != "")),
+      rcAddr: $rcAddr, unit: $unit, hasRc: ($vfs != null),
       total: ($about.total // null), used: ($about.used // null), free: ($about.free // null),
       cacheBytes: ($vfs.diskCache.bytesUsed // null),
       cacheFiles: ($vfs.diskCache.files // null),

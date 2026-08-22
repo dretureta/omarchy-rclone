@@ -12,6 +12,34 @@ pending uploads, today's error count, and buttons to open it, refresh its
 directory cache, upload what is queued, unmount it, or bring a dead one back.
 While data is moving, the bar shows the transfer rate instead of the count.
 
+## Run the mounts under systemd (recommended)
+
+`systemd/rclone-mount@.service` is a template unit: one instance per mount,
+with the per-mount details in `~/.config/rclone-mounts/<instance>.env` (see
+`systemd/example.env`).
+
+```bash
+cp systemd/rclone-mount@.service ~/.config/systemd/user/
+cp systemd/example.env ~/.config/rclone-mounts/gdrive.env   # then edit it
+systemctl --user daemon-reload
+systemctl --user enable --now rclone-mount@gdrive
+```
+
+Why bother, when a plain `rclone mount` works:
+
+- **A crashed mount comes back by itself.** `Restart=on-failure` plus an
+  `ExecStartPre` that clears the dead FUSE endpoint first — without that
+  cleanup the restart fails, because even `mkdir` on a hung mountpoint returns
+  "Transport endpoint is not connected".
+- **`Type=notify`**, so `systemctl start` returns when the mount is actually
+  readable rather than when the process spawned.
+- **`TimeoutStopSec=120`**, so a shutdown lets the write-back queue finish
+  uploading instead of killing it mid-flight.
+
+The widget notices on its own: it reads the unit name from the process cgroup,
+and routes unmount and remount through `systemctl` — unmounting a
+systemd-managed mount by hand only gets it restarted underneath you.
+
 ## Mount with `--rc`
 
 Live numbers — transfer rate, write-back queue, cache usage — come from
@@ -65,6 +93,9 @@ shell than they do anywhere else.
 - **Remount** replays the exact argv saved from `/proc/<pid>/cmdline` while the
   mount was alive; once the process is gone that argv is unrecoverable, which
   is why it is cached under `~/.cache/omarchy-rclone/mounts/`.
+- **Notifications** fire on the ok ↔ broken transition, not on every tick: the
+  last status per mount is kept on disk, so a crash systemd restarts within one
+  tick never nags, and a red icon nobody is looking at is not the only signal.
 - **Errors** are today's `ERROR` lines from the mount's `--log-file`, minus
   rclone's recurring "Failed to read config file - using previous config"
   message, which is benign and would otherwise keep the widget red.
