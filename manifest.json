@@ -19,17 +19,27 @@
     "allowMultiple": false,
     "defaultSection": "right",
     "defaults": {
-      "refreshIntervalSec": 10
+      "refreshIntervalSec": 15,
+      "activeIntervalSec": 2
     },
     "schema": [
       {
         "key": "refreshIntervalSec",
         "type": "integer",
         "label": "Refresh interval (seconds)",
-        "min": 2,
-        "max": 300,
+        "min": 5,
+        "max": 3600,
+        "step": 5,
+        "defaultValue": 15
+      },
+      {
+        "key": "activeIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval while the panel is open (seconds)",
+        "min": 1,
+        "max": 60,
         "step": 1,
-        "defaultValue": 10
+        "defaultValue": 2
       }
     ]
   }

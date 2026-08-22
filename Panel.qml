@@ -137,8 +137,16 @@ Panel {
     onTriggered: root.refresh()
   }
 
+  // Fast only while the panel is open, because that is the only place a moving
+  // number is worth 200ms of shell every two seconds. Keying this off "is
+  // something transferring" was the first attempt and it never went quiet: a
+  // mount with an indexer walking it trickles files all day, so the fast tier
+  // would have been permanent. Closed, the bar just shows a rate, and the idle
+  // tier still has to be brisk enough to notice a mount dying.
   Timer {
-    interval: Math.max(2, Number(root.setting("refreshIntervalSec", 10))) * 1000
+    interval: (root.opened
+      ? Math.max(1, Number(root.setting("activeIntervalSec", 2)))
+      : Math.max(5, Number(root.setting("refreshIntervalSec", 15)))) * 1000
     running: true
     repeat: true
     triggeredOnStart: true

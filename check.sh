@@ -21,6 +21,38 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Every icon in the panel is a private-use codepoint, and a missing one does not
+# fail loudly: fontconfig substitutes another font and the button quietly
+# renders somebody else's icon. A codepoint that several fonts claim is just as
+# bad, because the shell may not resolve it the way your test render did — that
+# is how U+F052, eject in a Nerd Font, came out as a dot grid from Font Awesome.
+check_glyphs() {
+  local bad=0 char cp families nerd others f
+  while read -r char; do
+    printf -v cp '%x' "'$char"
+    mapfile -t families < <(fc-list ":charset=$cp" family | tr ',' '\n' | LC_ALL=C sort -u)
+    nerd=() others=()
+    for f in "${families[@]}"; do
+      [[ -n $f ]] || continue
+      if [[ $f == *"Nerd Font"* || $f == *" NF" ]]; then nerd+=("$f"); else others+=("$f"); fi
+    done
+    if ((${#nerd[@]} == 0)); then
+      echo "FAIL: U+${cp^^} ($char) is in no Nerd Font here" >&2; bad=1
+    elif ((${#others[@]})); then
+      echo "FAIL: U+${cp^^} ($char) is also claimed by ${others[*]}, so fontconfig may pick that one" >&2; bad=1
+    else
+      echo "ok: U+${cp^^} $char"
+    fi
+  # LC_ALL=C on the sort because under a UTF-8 locale these codepoints collate
+  # as equal and `sort -u` would keep exactly one of them.
+  done < <(grep -ohP '[\x{E000}-\x{F8FF}\x{F0000}-\x{FFFFD}]' "$here"/*.qml | LC_ALL=C sort -u)
+  return $bad
+}
+
+echo "== glyphs"
+check_glyphs
+[[ ${1:-} == glyphs ]] && exit 0
+
 mount_json() { "$state" | jq -c --arg mp "$mnt" '.mounts[] | select(.path == $mp)'; }
 
 assert() {  # <jq filter> <expected> <label>

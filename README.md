@@ -90,8 +90,30 @@ shell than they do anywhere else.
 
 ```bash
 ./state.sh | jq .      # what the widget sees
-./check.sh             # full mount lifecycle against a throwaway :local: mount
+./check.sh glyphs      # icon codepoints only, instant
+./check.sh             # the above, then the full mount lifecycle three times:
+                       # no rc, rc over tcp, rc over a unix socket
 ```
+
+The glyph step exists because a wrong icon never fails loudly: fontconfig
+substitutes another font for a codepoint your font lacks, so the button renders
+somebody else's picture. A codepoint *several* fonts claim is just as bad — the
+shell may not resolve it the way a test render did. That is how `U+F052`, eject
+in a Nerd Font, shipped here as a dot grid from Font Awesome 7. The check fails
+on both cases and names the font it is competing with. (Idea from
+[davidszp/omarchy-rclone](https://github.com/davidszp/omarchy-rclone), which
+does the same thing by parsing the font's cmap.)
+
+## Settings
+
+Two, in the bar's plugin settings: how often to poll normally (15s), and while
+the panel is open (2s).
+
+Fast-when-open rather than fast-when-transferring: keying it off "something is
+moving" was the first attempt and it never went quiet, because a mount with an
+indexer walking it trickles files all day. Nobody is watching a number that
+only lives in a closed panel, and the idle tier still has to be brisk enough to
+notice a mount dying.
 
 ## How it reads the system
 
