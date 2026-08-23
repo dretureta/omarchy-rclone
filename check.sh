@@ -13,11 +13,21 @@ mnt="$work/mnt"
 mkdir -p "$work/src" "$mnt"
 echo hello > "$work/src/a.txt"
 
+# An empty config of our own: these mounts are all on-the-fly :local: remotes,
+# and reading the real rclone.conf would stop to ask for its password on any
+# machine where it is encrypted.
+export RCLONE_CONFIG="$work/rclone.conf"
+: > "$RCLONE_CONFIG"
+
 cleanup() {
   "$state" unmount "$mnt" >/dev/null 2>&1 || true
   rm -rf "$work"
   rm -f "${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-rclone/mounts/${mnt//\//%}".{cmd,meta,status}
   rm -f "$rc_sock"
+  systemctl --user stop omarchy-rclone-check.service >/dev/null 2>&1 || true
+  rm -f "$HOME/.config/systemd/user/omarchy-rclone-check.service"
+  rm -f "${XDG_RUNTIME_DIR:-/tmp}/omarchy-rclone-check-unit.sock"
+  systemctl --user daemon-reload >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -112,5 +122,66 @@ for round in plain rc-tcp rc-socket; do
   sleep 2
   assert .status down "unmounted"
 done
+
+# The systemd path has its own failure mode, and it is the one that bit for
+# real: a unit that failed enough times is rate limited, and `systemctl
+# restart` refuses with "Start request repeated too quickly" until the failure
+# is reset. The remount button did nothing at exactly the wrong moment.
+check_systemd() {
+  local unit=omarchy-rclone-check.service
+  local unit_file="$HOME/.config/systemd/user/$unit"
+  local sock="${XDG_RUNTIME_DIR:-/tmp}/omarchy-rclone-check-unit.sock"
+  local tries=0
+
+  systemctl --user show-environment >/dev/null 2>&1 || { echo "skip: no user systemd"; return 0; }
+
+  mkdir -p "$(dirname "$unit_file")"
+  cat > "$unit_file" <<UNIT
+[Unit]
+Description=omarchy-rclone check mount
+StartLimitBurst=2
+StartLimitIntervalSec=60
+
+[Service]
+Type=notify
+Environment=RCLONE_CONFIG=$work/rclone.conf
+ExecStartPre=-/usr/bin/rm -f $sock
+ExecStart=/usr/bin/rclone mount :local:$work/src $mnt --vfs-cache-mode full \
+  --rc --rc-addr unix://$sock --rc-no-auth --log-file $work/rclone.log
+Restart=on-failure
+RestartSec=1
+UNIT
+  systemctl --user daemon-reload
+
+  systemctl --user start "$unit"
+  sleep 2
+  assert .unit "$unit" "unit read from the cgroup"
+  assert .status ok "unit mounted"
+
+  systemctl --user stop "$unit"
+  sleep 2
+  # rclone refuses a non-empty mountpoint, which is how the real one failed.
+  : > "$mnt/intruder"
+  while [[ $(systemctl --user show "$unit" -p Result --value) != start-limit-hit ]]; do
+    ((++tries > 6)) && { echo "FAIL: could not drive the unit into its start limit" >&2; return 1; }
+    systemctl --user start "$unit" >/dev/null 2>&1 || true
+    sleep 2
+  done
+  echo "ok: unit is rate limited after repeated failures"
+
+  rm -f "$mnt/intruder"
+  "$state" remount "$mnt"
+  sleep 4
+  [[ $(systemctl --user is-active "$unit") == active ]] ||
+    { echo "FAIL: remount did not recover a rate-limited unit" >&2; return 1; }
+  assert .status ok "remount cleared the start limit"
+
+  systemctl --user stop "$unit" 2>/dev/null || true
+  rm -f "$unit_file" "$sock"
+  systemctl --user daemon-reload
+}
+
+echo "== systemd"
+check_systemd
 
 echo "all checks passed"

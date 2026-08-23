@@ -122,6 +122,10 @@ do_remount() {
   local mp="$1" saved argv
   read_meta "$(key_for "$mp")"
   if [[ -n ${meta_unit:-} ]]; then
+    # A unit that failed enough times is rate limited, and plain `restart`
+    # answers "Start request repeated too quickly" and does nothing — exactly
+    # when the button is most likely to be pressed.
+    systemctl --user reset-failed "$meta_unit" 2>/dev/null
     systemctl --user restart "$meta_unit"
     return
   fi
@@ -192,9 +196,15 @@ for cmdline in /proc/[0-9]*/cmdline; do
     esac
   done
 
-  # The cgroup line names the unit when systemd is the one running this mount.
-  unit=$(sed -n 's|.*/\([^/]*\.service\)$|\1|p' "/proc/$pid/cgroup" 2>/dev/null | head -1)
-  [[ $unit == rclone* ]] || unit=""
+  # The cgroup line names the unit when systemd is the one running this mount —
+  # but only if the unit exists to run THIS process. A mount started by hand
+  # inherits the cgroup of whatever spawned it, and "unmount" must never end up
+  # stopping the terminal, or the shell that the widget itself lives in.
+  unit=$(sed -n 's@.*/\([^/]*\.service\)$@\1@p' "/proc/$pid/cgroup" 2>/dev/null | head -1)
+  if [[ -n $unit ]] &&
+     [[ $(systemctl --user show "$unit" -p MainPID --value 2>/dev/null) != "$pid" ]]; then
+    unit=""
+  fi
 
   pid_of["$mp"]=$pid remote_of["$mp"]=$remote log_of["$mp"]=$log
   rc_of["$mp"]=$rc_addr unit_of["$mp"]=$unit
@@ -253,11 +263,20 @@ for mp in "${!seen[@]}"; do
     # rclone re-reads an encrypted config periodically and logs a failure when
     # the temp file it wrote at startup is gone from /tmp. It keeps working on
     # the previous config, so counting it would just paint the widget red.
+    # CRITICAL, not just ERROR: "failed to mount FUSE fs: ... is not empty" is
+    # logged at CRITICAL, and missing it left the panel with nothing to say
+    # about a mount that could not start at all.
     mapfile -t error_lines < <(tail -n 2000 -- "$log" 2>/dev/null |
-      grep -F " ERROR " | grep -F "$today" |
-      grep -vF "Failed to read config file - using previous config")
+      grep -E " (ERROR|CRITICAL) *: " | grep -F "$today" |
+      grep -vF "Failed to read config file - using previous config" |
+      # This one is ours: polling vfs/stats in the seconds before the VFS is
+      # registered makes rclone log an ERROR about the call, not about the
+      # mount. Counting our own noise against the user would be rude.
+      grep -vF 'rc: "vfs/stats": error: no VFS active')
     errors=${#error_lines[@]}
-    ((errors > 0)) && last_error=${error_lines[-1]}
+    # The @ delimiter matters: the alternation below contains a pipe.
+    ((errors > 0)) && last_error=$(sed -E 's@^[0-9/]+ [0-9:]+ (ERROR|CRITICAL) *: *@@' \
+      <<< "${error_lines[-1]}")
   fi
 
   about="{}"

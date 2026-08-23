@@ -21,6 +21,11 @@ ExecStartPre=/usr/bin/mkdir -p ${MOUNT_POINT}
 # next start dies with "bind: address already in use", so Restart= would never
 # recover a hard crash.
 ExecStartPre=-/usr/bin/rm -f %t/rclone-%i.sock
+# The mountpoint is writable again the moment it is not mounted, and anything
+# that writes there lands on the local disk and then blocks the next mount:
+# rclone refuses a non-empty mountpoint. Keeping the bare directory read-only
+# turns that silent trap into a permission error for whoever tried.
+ExecStartPre=-/usr/bin/chmod 0700 ${MOUNT_POINT}
 ExecStart=/usr/bin/rclone mount ${REMOTE} ${MOUNT_POINT} \
   --vfs-cache-mode full --vfs-cache-max-size 110G --vfs-write-back 1m \
   --buffer-size 128M --dir-cache-time 1000h --poll-interval 15s \
@@ -30,6 +35,7 @@ ExecStart=/usr/bin/rclone mount ${REMOTE} ${MOUNT_POINT} \
   --rc --rc-addr unix://%t/rclone-%i.sock --rc-no-auth
 ExecStopPost=-/usr/bin/fusermount3 -uz ${MOUNT_POINT}
 ExecStopPost=-/usr/bin/rm -f %t/rclone-%i.sock
+ExecStopPost=-/usr/bin/chmod 0500 ${MOUNT_POINT}
 # %t is XDG_RUNTIME_DIR, which is 0700: the socket is reachable by this user
 # and nobody else. A loopback port is not uid-restricted, and rclone's docs are
 # blunt that rc access is equivalent to shell access as the user running it.

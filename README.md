@@ -35,10 +35,22 @@ Why bother, when a plain `rclone mount` works:
   readable rather than when the process spawned.
 - **`TimeoutStopSec=120`**, so a shutdown lets the write-back queue finish
   uploading instead of killing it mid-flight.
+- **The bare mountpoint is left read-only** (`chmod 0500` on stop). An unmounted
+  mountpoint is just a directory, and anything that writes there — a backup run,
+  a sync tool — lands on the local disk and then blocks the next mount, because
+  rclone refuses a non-empty mountpoint. Better a permission error for whoever
+  tried than a mount that will not come back after the next reboot.
 
-The widget notices on its own: it reads the unit name from the process cgroup,
+The widget notices on its own: it reads the unit name from the process cgroup
 and routes unmount and remount through `systemctl` — unmounting a
-systemd-managed mount by hand only gets it restarted underneath you.
+systemd-managed mount by hand only gets it restarted underneath you. The unit
+counts only when its `MainPID` is the mount itself; a mount started by hand
+inherits the cgroup of whatever spawned it, and stopping *that* would take down
+the terminal, or the shell the widget lives in.
+
+Remount also runs `reset-failed` first. A unit that failed enough times is rate
+limited, and plain `restart` answers "Start request repeated too quickly" and
+does nothing — which is exactly the state the button gets pressed in.
 
 ## Mount with `--rc`
 

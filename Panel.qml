@@ -360,6 +360,20 @@ Panel {
           elide: Text.ElideRight
         }
 
+        // Why it is broken, in the row itself. Without this the panel said
+        // "Not mounted" and nothing else, while the log had the actual reason.
+        Text {
+          visible: text !== ""
+          width: parent.width
+          text: mountRow.status === "ok" ? "" : String(mountRow.mount.lastError || "")
+          color: root.urgent
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          wrapMode: Text.Wrap
+          maximumLineCount: 2
+          elide: Text.ElideRight
+        }
+
         Text {
           visible: text !== ""
           width: parent.width
