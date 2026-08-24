@@ -26,11 +26,32 @@ Panel {
   readonly property color statusColor: problems > 0 ? urgent : foreground
   readonly property real speed: Number(state.speed || 0)
   readonly property int queued: Number(state.queued || 0)
+  readonly property bool vertical: bar ? bar.vertical : false
+  readonly property string barGlyph: {
+    if (mounts.length === 0 || problems > 0) return "󰅤"
+    if (speed > 0) return "󰅧"
+    return "󰅟"
+  }
+  // A vertical bar is 28px wide and lays text out the same way as a horizontal
+  // one, so a rate like "1.2K/s" simply runs off the edge. The house rule for
+  // that layout is icon-only, and the glyph already carries the state: plain
+  // cloud, cloud with an arrow while data moves, crossed-out cloud in red when
+  // something is down. The counts are a hover or a click away.
   readonly property string barText: {
-    if (mounts.length === 0) return "󰅤"
-    if (problems > 0) return "󰅤 " + problems
-    if (speed > 0) return "󰅧 " + formatRate(speed)
-    return "󰅟 " + mounts.length
+    if (mounts.length === 0) return barGlyph
+    // A single digit still fits beside the glyph in 28px; a rate does not.
+    if (vertical) return barGlyph + " " + (problems > 0 ? problems : mounts.length)
+    if (problems > 0) return barGlyph + " " + problems
+    if (speed > 0) return barGlyph + " " + formatRate(speed)
+    return barGlyph + " " + mounts.length
+  }
+  readonly property string barTooltip: {
+    if (mounts.length === 0) return "No rclone mounts"
+    var parts = [problems > 0 ? problems + " of " + mounts.length + " down"
+                              : mounts.length + " mounted"]
+    if (speed > 0) parts.push(formatRate(speed))
+    if (queued > 0) parts.push(queued + " queued")
+    return parts.join("  ·  ")
   }
 
   visible: true
@@ -158,6 +179,7 @@ Panel {
     anchors.fill: parent
     bar: root.bar
     text: root.barText
+    tooltipText: root.barTooltip
     active: root.problems > 0
     activeColor: root.statusColor
     fontSize: Style.font.bodySmall

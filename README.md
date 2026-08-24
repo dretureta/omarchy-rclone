@@ -10,7 +10,9 @@ sitting there looking empty.
 The popup lists every mount with its status, remote usage, VFS cache size,
 pending uploads, today's error count, and buttons to open it, refresh its
 directory cache, upload what is queued, unmount it, or bring a dead one back.
-While data is moving, the bar shows the transfer rate instead of the count.
+While data is moving, the bar shows the transfer rate instead of the count — on
+a horizontal bar. A vertical bar is 28px wide and lays text out the same way, so
+there it stays glyph plus count and the rate moves to the hover tooltip.
 
 ## Run the mounts under systemd (recommended)
 
